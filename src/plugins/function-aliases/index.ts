@@ -1,15 +1,16 @@
 import { PluginController } from "../PluginController";
 import { DispatchedEvent } from "../../globals/extra-actions";
-import { MathQuillConfig, MathQuillField } from "#components";
+import { MathQuillField, MathQuillView } from "#components";
 import { getMetadataFromListModel } from "../../core-plugins/manage-metadata/sync";
 import {
   DefinitionLHS,
   FnAlias,
   Registry,
-  identifiersIn,
+  definedIdentifier,
   isMultiChar,
   makeStoredName,
   parseDefinitionLHS,
+  startsWithAliasName,
   toDisplay,
   toStored,
 } from "./latex";
@@ -33,6 +34,9 @@ export default class FunctionAliases extends PluginController {
   private lastMultiCharKey = "";
   private readonly vanillaGetMathquillConfig = this.cc.getMathquillConfig;
   private wrappedGetMathquillConfig?: typeof this.cc.getMathquillConfig;
+  /** The focused field doesn't get new names until it loses focus, since
+   * reconfiguring it can redraw it and lose the cursor. */
+  private focusedMq?: MathQuillField;
 
   afterEnable() {
     const prev = this.cc.getMathquillConfig;
@@ -57,7 +61,8 @@ export default class FunctionAliases extends PluginController {
     if (this.cc.getMathquillConfig === this.wrappedGetMathquillConfig) {
       this.cc.getMathquillConfig = this.vanillaGetMathquillConfig;
     }
-    this.refreshMathFieldConfigs();
+    this.focusedMq = undefined;
+    this.refreshMathFieldConfigs(true);
     this.cc.updateViews();
   }
 
@@ -70,20 +75,60 @@ export default class FunctionAliases extends PluginController {
     return undefined;
   }
 
+  afterHandleDispatchedAction() {
+    const mq = MathQuillView.getFocusedMathquill();
+    if (mq === this.focusedMq) return;
+    this.focusedMq = mq;
+    setTimeout(() => this.refreshMathFieldConfigs());
+  }
+
   /** Called from the expression list's mathquill `latex` prop. */
   toDisplay(latex: string) {
+    // Leave the focused field as typed (e.g. `sdfLine` or
+    // `\operatorname{sdf}Line`) if it means the same thing. Otherwise Desmos
+    // would rewrite it and move the cursor to the end.
+    const typed = MathQuillView.getFocusedMathquill()?.latex();
+    if (typed !== undefined && toStored(typed, this.registry) === latex)
+      return typed;
     return toDisplay(latex, this.registry);
   }
 
   private onSetItemLatex(evt: { id: string; latex: string }) {
     const def = parseDefinitionLHS(evt.latex);
     const current = this.aliasById.get(evt.id);
-    const next = def ? this.aliasFor(evt.id, def, current) : undefined;
+    let next: FnAlias | undefined;
+    if (def) next = this.aliasFor(evt.id, def, current);
+    // Keep the alias through intermediate edits like `area(r,` so it
+    // doesn't flicker or get renamed.
+    else if (current && startsWithAliasName(evt.latex, current)) next = current;
     if (!sameAlias(current, next)) {
       this.dsm.metadata?.updateForExprDuringDispatch(evt.id, { fnAlias: next });
-      this.rebuildRegistry(evt.id);
+      if (this.rebuildRegistry(evt.id)) {
+        // Can't dispatch during a dispatch.
+        setTimeout(() => this.normalizeOtherExpressions(evt.id));
+      }
     }
     evt.latex = toStored(evt.latex, this.registry);
+  }
+
+  /**
+   * Re-apply the registry to expressions other than `id`. Calls typed before
+   * their definition (or before a matching arity existed) are saved with
+   * their displayed name, and need rewriting once it's defined.
+   */
+  private normalizeOtherExpressions(id: string) {
+    for (const model of this.cc.getAllItemModels()) {
+      if (model.id === id || model.type !== "expression") continue;
+      const latex = model.latex ?? "";
+      const display = toDisplay(latex, this.registry);
+      if (toStored(display, this.registry) === latex) continue;
+      // Dispatch the displayed form so `onSetItemLatex` treats it like an edit.
+      this.cc.dispatch({
+        type: "set-item-latex",
+        id: model.id,
+        latex: display,
+      });
+    }
   }
 
   private aliasFor(
@@ -135,16 +180,28 @@ export default class FunctionAliases extends PluginController {
     return defs;
   }
 
+  /**
+   * Identifiers defined by other expressions. Identifiers that are only
+   * referenced are free to use, so dangling calls to a previous alias
+   * reconnect when it's redefined.
+   */
   private takenIdentifiers(id: string) {
     const taken = new Set<string>();
     for (const model of this.cc.getAllItemModels()) {
       if (model.id === id || model.type !== "expression") continue;
-      for (const ident of identifiersIn(model.latex ?? "")) taken.add(ident);
+      const ident = definedIdentifier(model.latex ?? "");
+      if (ident) taken.add(ident);
     }
     for (const [aliasId, alias] of this.aliasById) {
       if (aliasId !== id) taken.add(alias.stored);
     }
     return taken;
+  }
+
+  private autoOperatorNames(names: Iterable<string>) {
+    return this.vanillaGetMathquillConfig.call(this.cc, {
+      additionalOperators: [...names],
+    }).autoOperatorNames;
   }
 
   private isBuiltinName(name: string) {
@@ -157,10 +214,11 @@ export default class FunctionAliases extends PluginController {
 
   /**
    * Rebuild the registry from the metadata note, keeping only aliases whose
-   * expression still defines the stored name. `pendingId` is the expression
+   * expression still starts with the aliased name. `pendingId` is the expression
    * currently being edited, whose model latex is not yet updated.
+   * Returns whether the registry changed.
    */
-  private rebuildRegistry(pendingId?: string) {
+  private rebuildRegistry(pendingId?: string): boolean {
     const metadata = getMetadataFromListModel(this.calc);
     this.aliasById.clear();
     for (const [id, m] of Object.entries(metadata.expressions)) {
@@ -168,41 +226,41 @@ export default class FunctionAliases extends PluginController {
       if (!alias) continue;
       const model = this.cc.getItemModel(id);
       if (model?.type !== "expression") continue;
-      if (
-        id !== pendingId &&
-        !(model.latex ?? "").trimStart().startsWith(alias.stored + "\\left(")
-      )
+      if (id !== pendingId && !startsWithAliasName(model.latex ?? "", alias))
         continue;
       this.aliasById.set(id, alias);
     }
     const aliases = [...this.aliasById.values()];
     const registryKey = JSON.stringify(aliases);
-    if (registryKey === this.lastRegistryKey) return;
+    if (registryKey === this.lastRegistryKey) return false;
     this.lastRegistryKey = registryKey;
     this.registry = new Registry(aliases);
     const multiCharKey = [...this.registry.multiCharNames].sort().join(" ");
     if (multiCharKey !== this.lastMultiCharKey) {
       this.lastMultiCharKey = multiCharKey;
-      // Defer: mathquill config changes shouldn't happen mid-keystroke.
       setTimeout(() => this.refreshMathFieldConfigs());
     }
+    return true;
   }
 
   /**
    * Mathquill only reads its config on mount, so push the updated
    * autoOperatorNames into expression fields that are already mounted.
    */
-  private refreshMathFieldConfigs() {
-    const config: MathQuillConfig = this.cc.getMathquillConfig({
-      additionalOperators: [],
-    });
+  private refreshMathFieldConfigs(includeFocused = false) {
+    const autoOperatorNames = this.autoOperatorNames(
+      this.registry.multiCharNames
+    );
     const fields = document.querySelectorAll(
       ".dcg-expressionitem .dcg-mq-editable-field"
     );
     for (const el of fields) {
       const mq = (el as { _mqMathFieldInstance?: MathQuillField })
         ._mqMathFieldInstance;
-      mq?.config({ autoOperatorNames: config.autoOperatorNames });
+      if (!mq) continue;
+      if (!includeFocused && mq === MathQuillView.getFocusedMathquill())
+        continue;
+      mq.config({ autoOperatorNames });
     }
   }
 }

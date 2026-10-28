@@ -58,31 +58,41 @@ interface Token {
 const IDENT_RE = /^[a-zA-Z](?:_\{[a-zA-Z0-9]+\}|_[a-zA-Z0-9])?/;
 const OPNAME_RE = /^\\operatorname\{([a-zA-Z]+)\}/;
 const COMMAND_RE = /^\\(?:[a-zA-Z]+|.)/;
-const LETTER_RUN_BEFORE_PAREN_RE = /^[a-zA-Z]{2,}(?=\\left\()/;
+/**
+ * A name typed before `\left(`, possibly split into upright and plain parts.
+ * Mathquill writes `\operatorname{sdf}Line` when letters are typed after a
+ * name it already knows, so that's read as `sdfLine`.
+ */
+const WORD_BEFORE_PAREN_RE =
+  /^(?:\\operatorname\{[a-zA-Z]+\}|[a-zA-Z])+(?=\\left\()/;
+
+function wordName(word: string) {
+  return word.replace(/\\operatorname\{([a-zA-Z]+)\}/g, "$1");
+}
 
 /**
  * Tokenize just enough latex to find identifiers and operatornames.
- * `bareRunNames` are multi-character names that should also be recognized
- * when typed as plain letters (`area` rather than `\operatorname{area}`)
+ * `wordNames` are multi-character names that should also be recognized
+ * when typed as plain or partly plain letters (`area`, `\operatorname{ar}ea`)
  * directly before a `\left(`.
  */
-function tokenize(latex: string, bareRunNames?: Set<string>): Token[] {
+function tokenize(latex: string, wordNames?: Set<string>): Token[] {
   const tokens: Token[] = [];
   let i = 0;
   while (i < latex.length) {
     const rest = latex.slice(i);
     let m: RegExpMatchArray | null;
-    if ((m = OPNAME_RE.exec(rest))) {
+    if (
+      wordNames &&
+      (m = WORD_BEFORE_PAREN_RE.exec(rest)) &&
+      wordNames.has(wordName(m[0]))
+    ) {
+      tokens.push(token("opname", i, m[0].length, wordName(m[0])));
+    } else if ((m = OPNAME_RE.exec(rest))) {
       tokens.push(token("opname", i, m[0].length, m[1]));
     } else if (rest.startsWith("\\")) {
       m = COMMAND_RE.exec(rest)!;
       tokens.push(token("other", i, m[0].length, m[0]));
-    } else if (
-      bareRunNames &&
-      (m = LETTER_RUN_BEFORE_PAREN_RE.exec(rest)) &&
-      bareRunNames.has(m[0])
-    ) {
-      tokens.push(token("opname", i, m[0].length, m[0]));
     } else if ((m = IDENT_RE.exec(rest))) {
       tokens.push(token("ident", i, m[0].length, m[0]));
     } else {
@@ -153,23 +163,39 @@ export interface DefinitionLHS {
 }
 
 const PARAM_RE =
-  /^\s*(?:[a-zA-Z](?:_\{[a-zA-Z0-9]+\}|_[a-zA-Z0-9])?|\\[a-zA-Z]+)\s*$/;
+  /^(?:[a-zA-Z](?:_\{[a-zA-Z0-9]+\}|_[a-zA-Z0-9])?|\\[a-zA-Z]+)$/;
+
+/** Mathquill writes a typed space as `\ `. */
+function withoutSpaces(latex: string) {
+  return latex.replace(/\\ |\s/g, "");
+}
 
 /**
- * Recognize `name\left(p_1,...,p_n\right)=` at the start of `latex`, where
- * `name` is an identifier, `\operatorname{word}`, or a bare run of 2+ letters.
+ * The function name at the start of `latex` if it's followed by `\left(`:
+ * an identifier, or a multi-character name (`area`, `\operatorname{area}`,
+ * `\operatorname{ar}ea`). Returns the display name and its length in `latex`.
  */
+function leadingName(latex: string) {
+  const word = WORD_BEFORE_PAREN_RE.exec(latex);
+  if (word && isMultiChar(wordName(word[0])))
+    return { display: wordName(word[0]), length: word[0].length };
+  const ident = IDENT_RE.exec(latex);
+  if (ident && latex.startsWith("\\left(", ident[0].length))
+    return { display: ident[0], length: ident[0].length };
+  return undefined;
+}
+
+/** Recognize `name\left(p_1,...,p_n\right)=` at the start of `latex`. */
 export function parseDefinitionLHS(latex: string): DefinitionLHS | undefined {
   const s = latex.trimStart();
-  const opname = OPNAME_RE.exec(s);
-  const m = opname ?? LETTER_RUN_BEFORE_PAREN_RE.exec(s) ?? IDENT_RE.exec(s);
-  if (!m) return undefined;
-  const display = opname ? opname[1] : m[0];
-  const argList = parseArgs(s, m[0].length);
+  const name = leadingName(s);
+  if (!name) return undefined;
+  const argList = parseArgs(s, name.length);
   if (!argList || argList.args.length === 0) return undefined;
-  if (!argList.args.every((a) => PARAM_RE.test(a))) return undefined;
-  if (!/^\s*=/.test(s.slice(argList.end))) return undefined;
-  return { display, arity: argList.args.length };
+  if (!argList.args.every((a) => PARAM_RE.test(withoutSpaces(a))))
+    return undefined;
+  if (!withoutSpaces(s.slice(argList.end)).startsWith("=")) return undefined;
+  return { display: name.display, arity: argList.args.length };
 }
 
 /** Rewrite displayed names into stored identifiers, based on call arity. */
@@ -206,11 +232,26 @@ export function toDisplay(latex: string, registry: Registry) {
   return out + latex.slice(last);
 }
 
-/** All identifiers (in latex form) appearing in `latex`. */
-export function identifiersIn(latex: string): string[] {
-  return tokenize(latex)
-    .filter((t) => t.kind === "ident")
-    .map((t) => t.name);
+/**
+ * The identifier defined by `latex`, if it's an assignment `a_{1}=...` or a
+ * function definition `f\left(x\right)=...`.
+ */
+export function definedIdentifier(latex: string): string | undefined {
+  const s = latex.trimStart();
+  const m = IDENT_RE.exec(s);
+  if (!m) return undefined;
+  const end = parseArgs(s, m[0].length)?.end ?? m[0].length;
+  return withoutSpaces(s.slice(end)).startsWith("=") ? m[0] : undefined;
+}
+
+/**
+ * Whether `latex` starts with a call-like use of the alias's name, either in
+ * stored or displayed form. True even while the arguments are mid-edit.
+ */
+export function startsWithAliasName(latex: string, alias: FnAlias) {
+  const s = latex.trimStart();
+  if (s.startsWith(alias.stored + "\\left(")) return true;
+  return leadingName(s)?.display === alias.display;
 }
 
 /**

@@ -1,8 +1,10 @@
 import {
   Registry,
+  definedIdentifier,
   makeStoredName,
   parseArgs,
   parseDefinitionLHS,
+  startsWithAliasName,
   toDisplay,
   toStored,
 } from "./latex";
@@ -47,6 +49,21 @@ describe("parseDefinitionLHS", () => {
     ],
     ["area\\left(r\\right)=\\pi r^{2}", { display: "area", arity: 1 }],
     ["g\\left(\\theta\\right)=\\theta", { display: "g", arity: 1 }],
+    // typed spaces
+    [
+      "\\operatorname{sdfLine}\\left(p,\\ a,\\ b\\right)\\ =p",
+      { display: "sdfLine", arity: 3 },
+    ],
+    ["sdfLine\\left(p,\\ a\\right)=p+a", { display: "sdfLine", arity: 2 }],
+    // letters typed after a known name
+    [
+      "\\operatorname{sdf}Line\\left(p\\right)=p",
+      { display: "sdfLine", arity: 1 },
+    ],
+    [
+      "s\\operatorname{df}L\\operatorname{ine}\\left(p\\right)=p",
+      { display: "sdfLine", arity: 1 },
+    ],
     ["C\\left(2\\right)=x", undefined],
     ["C\\left(x\\right)", undefined],
     ["C\\left(\\right)=1", undefined],
@@ -112,6 +129,15 @@ describe("toStored / toDisplay", () => {
     expect(toStored("ab\\left(1\\right)", registry)).toBe("ab\\left(1\\right)");
   });
 
+  test("names split into upright and plain parts are recognized", () => {
+    expect(toStored("\\operatorname{ar}ea\\left(1\\right)", registry)).toBe(
+      "a_{rea}\\left(1\\right)"
+    );
+    expect(toStored("2\\operatorname{are}a\\left(1\\right)", registry)).toBe(
+      "2a_{rea}\\left(1\\right)"
+    );
+  });
+
   test("unknown arity is left alone", () => {
     expect(toStored("\\operatorname{area}\\left(1,2\\right)", registry)).toBe(
       "\\operatorname{area}\\left(1,2\\right)"
@@ -138,5 +164,33 @@ describe("makeStoredName", () => {
   test("collisions", () => {
     const taken = new Set(["C_{ov2}", "C_{ov21}"]);
     expect(makeStoredName("C", 2, true, taken)).toBe("C_{ov22}");
+  });
+});
+
+describe("definedIdentifier", () => {
+  test("definitions", () => {
+    expect(definedIdentifier("a_{1}=3")).toBe("a_{1}");
+    expect(definedIdentifier("s_{dfLine}\\left(p,\\ a\\right)=p")).toBe(
+      "s_{dfLine}"
+    );
+    expect(definedIdentifier("s_{dfLine}\\left(1\\right)")).toBe(undefined);
+    expect(definedIdentifier("y=x")).toBe("y");
+  });
+});
+
+describe("startsWithAliasName", () => {
+  const alias = { display: "sdfLine", arity: 2, stored: "s_{dfLine}" };
+  test("matches stored, displayed and bare forms mid-edit", () => {
+    expect(startsWithAliasName("s_{dfLine}\\left(p,\\right)", alias)).toBe(
+      true
+    );
+    expect(
+      startsWithAliasName("\\operatorname{sdfLine}\\left(p,\\right)=", alias)
+    ).toBe(true);
+    expect(startsWithAliasName("sdfLine\\left(p,\\right)", alias)).toBe(true);
+    expect(
+      startsWithAliasName("\\operatorname{sdf}Line\\left(p,\\right)", alias)
+    ).toBe(true);
+    expect(startsWithAliasName("sdfLin\\left(p\\right)=1", alias)).toBe(false);
   });
 });
