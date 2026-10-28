@@ -1,0 +1,19 @@
+# Replacements for Function Aliases
+
+*plugin* `function-aliases`
+
+## Display aliased function names in the expression list
+
+*Description* `Show overloaded and multi-character function names in expressions`
+
+*Find* => `latex`
+```js
+latex: () => $displayLatex(this.model),
+ariaLabel: () => this.getAriaLabel("speech")
+```
+
+*Replace* `latex` with
+```js
+latex: () => DSM.functionAliases?.toDisplay($displayLatex(this.model)) ?? $displayLatex(this.model),
+ariaLabel: () => this.getAriaLabel("speech")
+```

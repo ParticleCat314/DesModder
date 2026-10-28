@@ -31,7 +31,7 @@ export function changeExprInMetadata(
     const key = _key as keyof Expression;
     const value = obj[key];
     if (value !== getDefaultValue(key)) {
-      changed[key] = value;
+      (changed as Record<keyof Expression, unknown>)[key] = value;
     } else {
       // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
       delete changed[key];
@@ -74,6 +74,8 @@ function getDefaultValue(key: keyof Expression) {
     case "glesmos":
     case "glesmosLinesConfirmed":
       return false;
+    case "fnAlias":
+      return undefined;
     default: {
       const _exhaustive: never = key;
       return _exhaustive;

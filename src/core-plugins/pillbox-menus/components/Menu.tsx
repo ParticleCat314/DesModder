@@ -50,6 +50,7 @@ const categoryPlugins: Record<string, PluginID[]> = {
     "custom-mathquill-config",
     "code-golf",
     "better-navigation",
+    "function-aliases",
   ],
   visual: [
     "set-primary-color",

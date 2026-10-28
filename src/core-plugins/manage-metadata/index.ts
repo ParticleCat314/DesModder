@@ -82,6 +82,11 @@ export default class ManageMetadata extends PluginController {
     this.util.showToast({ message: { key: "GLesmos-not-enabled" } });
   }
 
+  /** For plugins updating metadata while already inside a dispatch. */
+  updateForExprDuringDispatch(id: string, obj: Partial<MetadataExpression>) {
+    this._updateExprMetadata(id, obj);
+  }
+
   /** Called from inside a couple dispatched functions. */
   duplicateMetadata(toID: string, fromID: string) {
     const model = this.getDsmItemModel(fromID);

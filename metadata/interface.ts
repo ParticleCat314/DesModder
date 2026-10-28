@@ -8,4 +8,10 @@ export interface Expression {
   errorHidden?: boolean;
   glesmos?: boolean;
   glesmosLinesConfirmed?: boolean;
+  /** Set by function-aliases on the expression defining an aliased function */
+  fnAlias?: {
+    display: string;
+    arity: number;
+    stored: string;
+  };
 }

@@ -386,3 +386,8 @@ quake-pro-opt-dollyMagnification-name = Dolly Multiplier
 quake-pro-opt-dollyMagnification-desc = Heightens the zoom behavior by multiplying (dollying) the camera's viewport slider.
 quake-pro-opt-scalarZoomed-name = Scalar Cancellation
 quake-pro-opt-scalarZoomed-desc = Combats perspective distortion by multiplying (enlarging) the screen viewport (requires max zoom to be fully seen).
+
+## Function Aliases
+function-aliases-name = Function Aliases
+function-aliases-desc = Lets you overload functions by argument count, like C(x) and C(x,y), and define multi-character function names like area(r). Graphs stay compatible with vanilla Desmos, which shows the saved names (such as C_ov2 or a_rea).
+function-aliases-builtin-name = "{ $name }" is already a built-in function name.
